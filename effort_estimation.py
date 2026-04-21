@@ -572,7 +572,7 @@ def upload_documents():
         return jsonify(params)
     except Exception as e:
         print(f"❌ GitHub Copilot extraction error: {e}")
-        return jsonify({'error': 'GitHub Copilot extraction failed. Please verify token/permissions and try again.'}), 500
+        return jsonify({'error': 'GitHub Copilot extraction failed. Common issues: expired token, missing Copilot permissions, or API rate limits. Please verify token/permissions and try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
