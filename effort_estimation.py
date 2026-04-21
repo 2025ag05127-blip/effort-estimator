@@ -420,6 +420,7 @@ import json
 import logging
 import re
 import requests
+import threading
 import time
 from docx import Document
 import pdfplumber
@@ -433,10 +434,8 @@ from reportlab.lib.units import inch
 app = Flask(__name__, template_folder=os.path.join(LOCAL_FOLDER_PATH, 'templates'))
 app.secret_key = os.urandom(24)
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-)
+LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("effort_estimator")
 
 # Load model and scaler
@@ -465,10 +464,15 @@ DEEPSEEK_TIMEOUT_SECONDS = 30
 DEEPSEEK_MAX_RETRIES = 3
 DEEPSEEK_BACKOFF_BASE_SECONDS = 1
 UPLOAD_PROCESSING_TIMEOUT_SECONDS = 45
+DOCX_EXTENSION = '.docx'
+PDF_EXTENSION = '.pdf'
+SUPPORTED_UPLOAD_EXTENSIONS = (DOCX_EXTENSION, PDF_EXTENSION)
 CIRCUIT_BREAKER_THRESHOLD = 3
 CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
+DEEPSEEK_MAX_BACKOFF_SECONDS = 30
 _deepseek_failures = 0
 _deepseek_circuit_open_until = 0.0
+_deepseek_circuit_lock = threading.Lock()
 
 class DeepSeekError(Exception):
     pass
@@ -490,22 +494,29 @@ class DeepSeekResponseError(DeepSeekError):
 
 def _reset_circuit_breaker():
     global _deepseek_failures, _deepseek_circuit_open_until
-    _deepseek_failures = 0
-    _deepseek_circuit_open_until = 0.0
+    with _deepseek_circuit_lock:
+        _deepseek_failures = 0
+        _deepseek_circuit_open_until = 0.0
 
 def _record_circuit_failure():
     global _deepseek_failures, _deepseek_circuit_open_until
-    _deepseek_failures += 1
-    if _deepseek_failures >= CIRCUIT_BREAKER_THRESHOLD:
-        _deepseek_circuit_open_until = time.time() + CIRCUIT_BREAKER_COOLDOWN_SECONDS
-        logger.warning("DeepSeek circuit breaker opened for %ss after %s consecutive failures.", CIRCUIT_BREAKER_COOLDOWN_SECONDS, _deepseek_failures)
+    with _deepseek_circuit_lock:
+        _deepseek_failures += 1
+        if _deepseek_failures >= CIRCUIT_BREAKER_THRESHOLD:
+            _deepseek_circuit_open_until = time.time() + CIRCUIT_BREAKER_COOLDOWN_SECONDS
+            logger.warning("DeepSeek circuit breaker opened for %d seconds after %d consecutive failures.", CIRCUIT_BREAKER_COOLDOWN_SECONDS, _deepseek_failures)
 
 def _is_circuit_open():
-    return time.time() < _deepseek_circuit_open_until
+    with _deepseek_circuit_lock:
+        return time.time() < _deepseek_circuit_open_until
+
+def _circuit_remaining_seconds():
+    with _deepseek_circuit_lock:
+        return int(max(1, _deepseek_circuit_open_until - time.time()))
 
 def call_deepseek(prompt, system_message="You are a helpful assistant."):
     if _is_circuit_open():
-        remaining = int(max(1, _deepseek_circuit_open_until - time.time()))
+        remaining = _circuit_remaining_seconds()
         raise DeepSeekConnectionError(f"DeepSeek service temporarily unavailable after repeated failures. Retry in ~{remaining}s.")
 
     headers = {
@@ -551,6 +562,7 @@ def call_deepseek(prompt, system_message="You are a helpful assistant."):
             logger.warning("DeepSeek rate limited on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
             raise e
         except DeepSeekValidationError:
+            logger.warning("DeepSeek validation error on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
             raise
         except DeepSeekResponseError as e:
             last_error = e
@@ -563,7 +575,7 @@ def call_deepseek(prompt, system_message="You are a helpful assistant."):
             raise DeepSeekError(f"DeepSeek error: {e}")
 
         if attempt < DEEPSEEK_MAX_RETRIES:
-            wait_seconds = DEEPSEEK_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+            wait_seconds = min(DEEPSEEK_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), DEEPSEEK_MAX_BACKOFF_SECONDS)
             logger.info("Retrying DeepSeek call in %ss (attempt %s/%s)", wait_seconds, attempt + 1, DEEPSEEK_MAX_RETRIES)
             time.sleep(wait_seconds)
 
@@ -615,7 +627,7 @@ Document text:
     try:
         params = json.loads(resp_text)
         if not isinstance(params, dict):
-            raise DeepSeekValidationError("DeepSeek response is not a JSON object.")
+            raise DeepSeekValidationError(f"DeepSeek response must be a JSON object (dict), but received {type(params).__name__}.")
         params['req_count'] = max(1, min(500, int(params.get('req_count', 50))))
         params['complexity'] = max(1.0, min(5.0, float(params.get('complexity', 3.0))))
         params['team_exp'] = max(0.0, min(15.0, float(params.get('team_exp', 3.0))))
@@ -669,7 +681,7 @@ def upload_documents():
             continue
 
         filename_lower = file.filename.lower()
-        if filename_lower.endswith('.docx') or filename_lower.endswith('.pdf'):
+        if filename_lower.endswith(SUPPORTED_UPLOAD_EXTENSIONS):
             supported_file_seen = True
 
         file_bytes = file.read()
@@ -678,9 +690,9 @@ def upload_documents():
             continue
 
         try:
-            if filename_lower.endswith('.docx'):
+            if filename_lower.endswith(DOCX_EXTENSION):
                 text = extract_text_from_docx(file_bytes)
-            elif filename_lower.endswith('.pdf'):
+            elif filename_lower.endswith(PDF_EXTENSION):
                 text = extract_text_from_pdf(file_bytes)
             else:
                 continue
@@ -700,19 +712,19 @@ def upload_documents():
         return jsonify(params)
     except DeepSeekRateLimitError as e:
         logger.warning("Upload extraction rate-limited: %s", e)
-        return jsonify({'error': 'GitHub Copilot extraction failed due to API rate limits. Please wait and try again.'}), 429
+        return jsonify({'error': 'DeepSeek extraction failed due to API rate limits. Please wait and try again.'}), 429
     except DeepSeekTimeoutError as e:
         logger.warning("Upload extraction timed out: %s", e)
-        return jsonify({'error': str(e)}), 504
+        return jsonify({'error': 'DeepSeek API timeout. Please try again.'}), 504
     except DeepSeekConnectionError as e:
         logger.warning("Upload extraction connection issue: %s", e)
-        return jsonify({'error': str(e)}), 503
+        return jsonify({'error': 'Cannot connect to DeepSeek API. Please check your network and API availability.'}), 503
     except DeepSeekValidationError as e:
         logger.warning("Upload extraction validation issue: %s", e)
-        return jsonify({'error': f'DeepSeek extraction returned invalid data. {e}'}), 502
+        return jsonify({'error': 'DeepSeek extraction returned invalid data. Please retry.'}), 502
     except DeepSeekError as e:
         logger.exception("Upload extraction DeepSeek error")
-        return jsonify({'error': f'GitHub Copilot extraction failed. Common issues: expired token, missing Copilot permissions, or API rate limits. Details: {str(e)}'}), 502
+        return jsonify({'error': 'DeepSeek extraction failed. Common issues: expired API key, missing permissions, or API rate limits. Please verify credentials and try again.'}), 502
     except Exception as e:
         logger.exception("Unexpected upload extraction error")
         return jsonify({'error': 'Unexpected error during document extraction. Please try again.'}), 500
@@ -753,7 +765,7 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
         return jsonify({'answer': fallback}), 200
     except (DeepSeekTimeoutError, DeepSeekConnectionError, DeepSeekResponseError, DeepSeekValidationError, DeepSeekError) as e:
         logger.warning("Chat DeepSeek fallback triggered: %s", e)
-        fallback = f"I'm having trouble reaching DeepSeek right now ({str(e)}). Based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate still looks directionally reasonable. Please verify token/permissions and network, then try again."
+        fallback = f"I'm having trouble reaching DeepSeek right now. Based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate still looks directionally reasonable. Please verify token/permissions and network, then try again."
         return jsonify({'answer': fallback}), 200
     except Exception as e:
         logger.exception("Unexpected chat error")
@@ -824,4 +836,6 @@ if __name__ == "__main__":
     print("🌐 Open http://localhost:5001 in your browser")
     print("⚠️  Press Ctrl+C to stop the server")
     print("="*60 + "\n")
-    app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)
+    is_production = os.environ.get("APP_ENV", "").lower() in {"prod", "production"}
+    debug_mode = os.environ.get("FLASK_DEBUG", "").lower() == "true" and not is_production
+    app.run(host='0.0.0.0', port=5001, debug=debug_mode, use_reloader=False)
