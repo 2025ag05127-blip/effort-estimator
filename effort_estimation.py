@@ -447,8 +447,7 @@ def call_copilot(prompt, system_message="You are a helpful assistant."):
     headers = {
         "Authorization": f"Bearer {COPILOT_API_KEY}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-GitHub-Api-Version": "2022-11-28"
+        "Accept": "application/json"
     }
     payload = {
         "model": "gpt-4",
@@ -463,7 +462,8 @@ def call_copilot(prompt, system_message="You are a helpful assistant."):
         response = requests.post(COPILOT_API_URL, headers=headers, json=payload, timeout=30)
         if response.status_code in (401, 403):
             raise Exception("GitHub Copilot authentication failed. Check GITHUB_TOKEN/COPILOT_API_KEY.")
-        if response.status_code == 429 or response.headers.get("X-RateLimit-Remaining") == "0":
+        remaining = response.headers.get("X-RateLimit-Remaining")
+        if response.status_code == 429 or (remaining is not None and remaining.isdigit() and int(remaining) == 0):
             raise Exception("GitHub API rate limit exceeded. Please retry later.")
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
@@ -572,7 +572,8 @@ def upload_documents():
         params = extract_params_with_copilot(texts)
         return jsonify(params)
     except Exception as e:
-        return jsonify({'error': f'GitHub Copilot extraction error: {str(e)}'}), 500
+        print(f"❌ GitHub Copilot extraction error: {e}")
+        return jsonify({'error': 'GitHub Copilot extraction failed. Please verify token/permissions and try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
