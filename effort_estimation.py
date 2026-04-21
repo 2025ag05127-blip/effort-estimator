@@ -41,6 +41,7 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
 try:
     OPENAI_API_TIMEOUT = int(os.environ.get("OPENAI_API_TIMEOUT", "30"))
 except ValueError:
+    print("⚠️ Invalid OPENAI_API_TIMEOUT value. Falling back to 30 seconds.")
     OPENAI_API_TIMEOUT = 30
 if not OPENAI_API_KEY:
     # Try reading from a file
@@ -476,7 +477,7 @@ def call_openai(prompt, system_message="You are a helpful assistant."):
     try:
         response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=OPENAI_API_TIMEOUT)
         if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+            raise Exception(f"HTTP {response.status_code} from OpenAI API")
         return response.json()["choices"][0]["message"]["content"]
     except requests.exceptions.Timeout:
         raise Exception(f"OpenAI API timeout ({OPENAI_API_TIMEOUT}s). Please try again.")
