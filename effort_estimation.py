@@ -577,6 +577,15 @@ def upload_documents():
     try:
         params = extract_params_with_openai(texts)
         return jsonify(params)
+    except requests.exceptions.Timeout as e:
+        print(f"❌ OpenAI extraction timeout: {e}")
+        return jsonify({'error': 'OpenAI extraction failed due to timeout. Please verify your API key and try again.'}), 500
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ OpenAI extraction connection error: {e}")
+        return jsonify({'error': 'OpenAI extraction failed due to connection error. Please verify your API key and network.'}), 500
+    except ValueError as e:
+        print(f"❌ OpenAI extraction parsing error: {e}")
+        return jsonify({'error': 'OpenAI extraction failed due to response parsing error. Please try again.'}), 500
     except Exception as e:
         print(f"❌ OpenAI extraction error: {e}")
         return jsonify({'error': 'OpenAI extraction failed. Please verify your API key and try again.'}), 500
