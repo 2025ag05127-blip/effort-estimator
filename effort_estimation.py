@@ -587,7 +587,7 @@ def upload_documents():
         print(f"❌ OpenAI extraction parsing error: {e}")
         return jsonify({'error': 'OpenAI extraction failed due to response parsing error. Please try again.'}), 500
     except Exception as e:
-        print(f"❌ OpenAI extraction error: {e}")
+        print(f"❌ OpenAI extraction error ({type(e).__name__}): {e}")
         return jsonify({'error': 'OpenAI extraction failed due to an unexpected API error (for example authentication or rate limiting). Please verify your configuration and try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
@@ -622,7 +622,7 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
         return jsonify({'answer': answer})
     except Exception as e:
         print(f"❌ Chat error: {e}")
-        fallback = f"I'm experiencing an issue communicating with OpenAI right now. However, based on the parameters (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate seems reasonable. Please check your API key and network."
+        fallback = "I'm experiencing an issue communicating with OpenAI right now, so I can't provide a reliable AI analysis at the moment. Please check your API key and network, then try again."
         return jsonify({'answer': fallback}), 200
 
 @app.route('/export_pdf', methods=['POST'])
