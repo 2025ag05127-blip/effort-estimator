@@ -417,8 +417,10 @@ print("✅ Model and scaler saved")
 from flask import Flask, request, jsonify, render_template, make_response
 import io
 import json
+import logging
 import re
 import requests
+import time
 from docx import Document
 import pdfplumber
 from reportlab.lib.pagesizes import A4
@@ -430,6 +432,12 @@ from reportlab.lib.units import inch
 # --- FIX: Use absolute path for templates ---
 app = Flask(__name__, template_folder=os.path.join(LOCAL_FOLDER_PATH, 'templates'))
 app.secret_key = os.urandom(24)
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+logger = logging.getLogger("effort_estimator")
 
 # Load model and scaler
 with open('effort_model.pkl', 'rb') as f:
@@ -453,8 +461,53 @@ def predict_total_effort(features):
 
 # ---------- DeepSeek API helper ----------
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_TIMEOUT_SECONDS = 30
+DEEPSEEK_MAX_RETRIES = 3
+DEEPSEEK_BACKOFF_BASE_SECONDS = 1
+UPLOAD_PROCESSING_TIMEOUT_SECONDS = 45
+CIRCUIT_BREAKER_THRESHOLD = 3
+CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
+_deepseek_failures = 0
+_deepseek_circuit_open_until = 0.0
+
+class DeepSeekError(Exception):
+    pass
+
+class DeepSeekTimeoutError(DeepSeekError):
+    pass
+
+class DeepSeekConnectionError(DeepSeekError):
+    pass
+
+class DeepSeekRateLimitError(DeepSeekError):
+    pass
+
+class DeepSeekValidationError(DeepSeekError):
+    pass
+
+class DeepSeekResponseError(DeepSeekError):
+    pass
+
+def _reset_circuit_breaker():
+    global _deepseek_failures, _deepseek_circuit_open_until
+    _deepseek_failures = 0
+    _deepseek_circuit_open_until = 0.0
+
+def _record_circuit_failure():
+    global _deepseek_failures, _deepseek_circuit_open_until
+    _deepseek_failures += 1
+    if _deepseek_failures >= CIRCUIT_BREAKER_THRESHOLD:
+        _deepseek_circuit_open_until = time.time() + CIRCUIT_BREAKER_COOLDOWN_SECONDS
+        logger.warning("DeepSeek circuit breaker opened for %ss after %s consecutive failures.", CIRCUIT_BREAKER_COOLDOWN_SECONDS, _deepseek_failures)
+
+def _is_circuit_open():
+    return time.time() < _deepseek_circuit_open_until
 
 def call_deepseek(prompt, system_message="You are a helpful assistant."):
+    if _is_circuit_open():
+        remaining = int(max(1, _deepseek_circuit_open_until - time.time()))
+        raise DeepSeekConnectionError(f"DeepSeek service temporarily unavailable after repeated failures. Retry in ~{remaining}s.")
+
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
@@ -468,17 +521,56 @@ def call_deepseek(prompt, system_message="You are a helpful assistant."):
         "temperature": 0.3,
         "max_tokens": 2000
     }
-    try:
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
-        return response.json()["choices"][0]["message"]["content"]
-    except requests.exceptions.Timeout:
-        raise Exception("DeepSeek API timeout (30s). Please try again.")
-    except requests.exceptions.ConnectionError:
-        raise Exception("Cannot connect to DeepSeek API. Check your network.")
-    except Exception as e:
-        raise Exception(f"DeepSeek error: {str(e)}")
+    last_error = None
+
+    for attempt in range(1, DEEPSEEK_MAX_RETRIES + 1):
+        try:
+            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=DEEPSEEK_TIMEOUT_SECONDS)
+            if response.status_code == 429:
+                raise DeepSeekRateLimitError("DeepSeek API rate limit reached. Please wait and try again.")
+            if response.status_code >= 500:
+                raise DeepSeekResponseError(f"DeepSeek API server error (HTTP {response.status_code}).")
+            if response.status_code != 200:
+                raise DeepSeekResponseError(f"DeepSeek API request failed (HTTP {response.status_code}). {response.text[:200]}")
+
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                raise DeepSeekValidationError(f"DeepSeek response format invalid: {e}")
+
+            _reset_circuit_breaker()
+            return content
+        except requests.exceptions.Timeout as e:
+            last_error = DeepSeekTimeoutError(f"DeepSeek API timeout ({DEEPSEEK_TIMEOUT_SECONDS}s). Please try again.")
+            logger.warning("DeepSeek timeout on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+        except requests.exceptions.ConnectionError as e:
+            last_error = DeepSeekConnectionError("Cannot connect to DeepSeek API. Check your network.")
+            logger.warning("DeepSeek connection error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+        except DeepSeekRateLimitError as e:
+            _record_circuit_failure()
+            logger.warning("DeepSeek rate limited on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+            raise e
+        except DeepSeekValidationError:
+            raise
+        except DeepSeekResponseError as e:
+            last_error = e
+            logger.warning("DeepSeek API response error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+        except requests.exceptions.RequestException as e:
+            last_error = DeepSeekConnectionError(f"DeepSeek request failed: {e}")
+            logger.warning("DeepSeek request exception on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+        except Exception as e:
+            logger.exception("Unexpected DeepSeek error")
+            raise DeepSeekError(f"DeepSeek error: {e}")
+
+        if attempt < DEEPSEEK_MAX_RETRIES:
+            wait_seconds = DEEPSEEK_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+            logger.info("Retrying DeepSeek call in %ss (attempt %s/%s)", wait_seconds, attempt + 1, DEEPSEEK_MAX_RETRIES)
+            time.sleep(wait_seconds)
+
+    _record_circuit_failure()
+    if isinstance(last_error, DeepSeekError):
+        raise last_error
+    raise DeepSeekError("DeepSeek call failed after retries.")
 
 # ---------- Document extraction ----------
 def extract_text_from_docx(file_bytes):
@@ -493,6 +585,9 @@ def extract_text_from_pdf(file_bytes):
     return text
 
 def extract_params_with_deepseek(texts):
+    if not texts:
+        raise DeepSeekValidationError("No document text was provided for extraction.")
+
     combined = "\n\n--- NEXT DOCUMENT ---\n\n".join(texts)
     if len(combined) > 80000:
         combined = combined[:80000] + "...[truncated]"
@@ -519,6 +614,8 @@ Document text:
     resp_text = re.sub(r'```json\s*|\s*```', '', resp_text.strip())
     try:
         params = json.loads(resp_text)
+        if not isinstance(params, dict):
+            raise DeepSeekValidationError("DeepSeek response is not a JSON object.")
         params['req_count'] = max(1, min(500, int(params.get('req_count', 50))))
         params['complexity'] = max(1.0, min(5.0, float(params.get('complexity', 3.0))))
         params['team_exp'] = max(0.0, min(15.0, float(params.get('team_exp', 3.0))))
@@ -528,8 +625,14 @@ Document text:
         params['deadline'] = max(0.5, min(2.0, float(params.get('deadline', 1.0))))
         params['domain'] = max(1.0, min(5.0, float(params.get('domain', 3.0))))
         return params
+    except DeepSeekValidationError:
+        raise
+    except json.JSONDecodeError as e:
+        raise DeepSeekValidationError(f"DeepSeek returned invalid JSON: {resp_text[:200]}... Error: {e}")
+    except (TypeError, ValueError) as e:
+        raise DeepSeekValidationError(f"DeepSeek returned invalid parameter types/values: {e}")
     except Exception as e:
-        raise ValueError(f"DeepSeek response invalid: {resp_text[:200]}... Error: {e}")
+        raise DeepSeekValidationError(f"DeepSeek response invalid: {resp_text[:200]}... Error: {e}")
 
 @app.route('/')
 def index():
@@ -554,29 +657,65 @@ def upload_documents():
     files = request.files.getlist('documents')
     if len(files) == 0:
         return jsonify({'error': 'Empty file list'}), 400
+
+    start_time = time.time()
     texts = []
+    supported_file_seen = False
     for file in files:
+        if (time.time() - start_time) > UPLOAD_PROCESSING_TIMEOUT_SECONDS:
+            logger.warning("Upload document processing timed out after %ss", UPLOAD_PROCESSING_TIMEOUT_SECONDS)
+            return jsonify({'error': f'Document processing timed out after {UPLOAD_PROCESSING_TIMEOUT_SECONDS} seconds. Please try fewer/smaller files.'}), 408
         if file.filename == '':
             continue
+
+        filename_lower = file.filename.lower()
+        if filename_lower.endswith('.docx') or filename_lower.endswith('.pdf'):
+            supported_file_seen = True
+
         file_bytes = file.read()
+        if not file_bytes:
+            logger.info("Skipping empty uploaded file: %s", file.filename)
+            continue
+
         try:
-            if file.filename.endswith('.docx'):
+            if filename_lower.endswith('.docx'):
                 text = extract_text_from_docx(file_bytes)
-            elif file.filename.endswith('.pdf'):
+            elif filename_lower.endswith('.pdf'):
                 text = extract_text_from_pdf(file_bytes)
             else:
                 continue
             if text.strip():
                 texts.append(text)
         except Exception:
+            logger.exception("Failed to extract text from file: %s", file.filename)
             continue
+
+    if not supported_file_seen:
+        return jsonify({'error': 'No supported files found. Please upload .docx or .pdf files.'}), 400
     if not texts:
-        return jsonify({'error': 'No readable text extracted'}), 400
+        return jsonify({'error': 'No readable text extracted from uploaded documents.'}), 400
+
     try:
         params = extract_params_with_deepseek(texts)
         return jsonify(params)
+    except DeepSeekRateLimitError as e:
+        logger.warning("Upload extraction rate-limited: %s", e)
+        return jsonify({'error': 'GitHub Copilot extraction failed due to API rate limits. Please wait and try again.'}), 429
+    except DeepSeekTimeoutError as e:
+        logger.warning("Upload extraction timed out: %s", e)
+        return jsonify({'error': str(e)}), 504
+    except DeepSeekConnectionError as e:
+        logger.warning("Upload extraction connection issue: %s", e)
+        return jsonify({'error': str(e)}), 503
+    except DeepSeekValidationError as e:
+        logger.warning("Upload extraction validation issue: %s", e)
+        return jsonify({'error': f'DeepSeek extraction returned invalid data. {e}'}), 502
+    except DeepSeekError as e:
+        logger.exception("Upload extraction DeepSeek error")
+        return jsonify({'error': f'GitHub Copilot extraction failed. Common issues: expired token, missing Copilot permissions, or API rate limits. Details: {str(e)}'}), 502
     except Exception as e:
-        return jsonify({'error': f'DeepSeek extraction error: {str(e)}'}), 500
+        logger.exception("Unexpected upload extraction error")
+        return jsonify({'error': 'Unexpected error during document extraction. Please try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -608,8 +747,16 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
     try:
         answer = call_deepseek(prompt, system_msg)
         return jsonify({'answer': answer})
+    except DeepSeekRateLimitError as e:
+        logger.warning("Chat rate-limited: %s", e)
+        fallback = f"I'm currently rate-limited by DeepSeek. Please retry shortly. Meanwhile, based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate appears directionally reasonable."
+        return jsonify({'answer': fallback}), 200
+    except (DeepSeekTimeoutError, DeepSeekConnectionError, DeepSeekResponseError, DeepSeekValidationError, DeepSeekError) as e:
+        logger.warning("Chat DeepSeek fallback triggered: %s", e)
+        fallback = f"I'm having trouble reaching DeepSeek right now ({str(e)}). Based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate still looks directionally reasonable. Please verify token/permissions and network, then try again."
+        return jsonify({'answer': fallback}), 200
     except Exception as e:
-        print(f"❌ Chat error: {e}")
+        logger.exception("Unexpected chat error")
         fallback = f"I'm having trouble connecting to DeepSeek: {str(e)}. However, based on the parameters (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate seems reasonable. Please check your API key and network."
         return jsonify({'answer': fallback}), 200
 
