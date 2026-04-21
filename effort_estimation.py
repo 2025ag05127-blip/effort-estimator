@@ -579,7 +579,7 @@ def upload_documents():
         return jsonify(params)
     except requests.exceptions.Timeout as e:
         print(f"❌ OpenAI extraction timeout: {e}")
-        return jsonify({'error': 'OpenAI extraction failed due to timeout. Please verify your API key and try again.'}), 500
+        return jsonify({'error': 'OpenAI extraction failed due to timeout. Please try again in a moment.'}), 500
     except requests.exceptions.ConnectionError as e:
         print(f"❌ OpenAI extraction connection error: {e}")
         return jsonify({'error': 'OpenAI extraction failed due to connection error. Please verify your API key and network.'}), 500
@@ -588,7 +588,7 @@ def upload_documents():
         return jsonify({'error': 'OpenAI extraction failed due to response parsing error. Please try again.'}), 500
     except Exception as e:
         print(f"❌ OpenAI extraction error: {e}")
-        return jsonify({'error': 'OpenAI extraction failed. This may be due to an invalid API key or unexpected API response. Please verify your configuration and try again.'}), 500
+        return jsonify({'error': 'OpenAI extraction failed due to an unexpected API error (for example authentication or rate limiting). Please verify your configuration and try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
