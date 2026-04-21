@@ -462,8 +462,7 @@ def call_copilot(prompt, system_message="You are a helpful assistant."):
         response = requests.post(COPILOT_API_URL, headers=headers, json=payload, timeout=30)
         if response.status_code in (401, 403):
             raise Exception("GitHub Copilot authentication failed. Check GITHUB_TOKEN/COPILOT_API_KEY.")
-        remaining = response.headers.get("X-RateLimit-Remaining")
-        if response.status_code == 429 or (remaining is not None and remaining.isdigit() and int(remaining) == 0):
+        if response.status_code == 429:
             raise Exception("GitHub API rate limit exceeded. Please retry later.")
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
