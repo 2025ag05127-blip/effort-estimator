@@ -37,6 +37,8 @@ print(f"Working directory: {os.getcwd()}")
 # ---------- 3. Get OpenAI API Key (no getpass hang) ----------
 # Try environment variable first
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
+OPENAI_API_TIMEOUT = 30
 if not OPENAI_API_KEY:
     # Try reading from a file
     key_file = "openai_api_key.txt"
@@ -460,7 +462,7 @@ def call_openai(prompt, system_message="You are a helpful assistant."):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "gpt-4",
+        "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": system_message},
             {"role": "user", "content": prompt}
@@ -469,12 +471,12 @@ def call_openai(prompt, system_message="You are a helpful assistant."):
         "max_tokens": 2000
     }
     try:
-        response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=30)
+        response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=OPENAI_API_TIMEOUT)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
         return response.json()["choices"][0]["message"]["content"]
     except requests.exceptions.Timeout:
-        raise Exception("OpenAI API timeout (30s). Please try again.")
+        raise Exception(f"OpenAI API timeout ({OPENAI_API_TIMEOUT}s). Please try again.")
     except requests.exceptions.ConnectionError:
         raise Exception("Cannot connect to OpenAI API. Check your network.")
     except Exception as e:
@@ -576,7 +578,8 @@ def upload_documents():
         params = extract_params_with_openai(texts)
         return jsonify(params)
     except Exception as e:
-        return jsonify({'error': f'OpenAI extraction error: {str(e)}'}), 500
+        print(f"❌ OpenAI extraction error: {e}")
+        return jsonify({'error': 'OpenAI extraction failed. Please verify your API key and try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -610,7 +613,7 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
         return jsonify({'answer': answer})
     except Exception as e:
         print(f"❌ Chat error: {e}")
-        fallback = f"I'm having trouble connecting to OpenAI: {str(e)}. However, based on the parameters (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate seems reasonable. Please check your API key and network."
+        fallback = f"I'm having trouble connecting to OpenAI right now. However, based on the parameters (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate seems reasonable. Please check your API key and network."
         return jsonify({'answer': fallback}), 200
 
 @app.route('/export_pdf', methods=['POST'])
