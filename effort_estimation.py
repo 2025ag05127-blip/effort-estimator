@@ -8,7 +8,7 @@ import sys
 import subprocess
 
 # ---------- 1. Check / install required packages ----------
-required = ['flask', 'python-docx', 'pdfplumber', 'reportlab', 'pandas', 'scikit-learn', 'requests', 'numpy']
+required = ['flask', 'python-docx', 'pdfplumber', 'reportlab', 'pandas', 'scikit-learn', 'requests', 'openai', 'numpy']
 missing = []
 for pkg in required:
     try:
@@ -34,20 +34,26 @@ if not os.path.exists(LOCAL_FOLDER_PATH):
 os.chdir(LOCAL_FOLDER_PATH)
 print(f"Working directory: {os.getcwd()}")
 
-# ---------- 3. Get DeepSeek API Key (no getpass hang) ----------
+# ---------- 3. Get OpenAI API Key (no getpass hang) ----------
 # Try environment variable first
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-if not DEEPSEEK_API_KEY:
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
+try:
+    OPENAI_API_TIMEOUT = int(os.environ.get("OPENAI_API_TIMEOUT", "30"))
+except ValueError:
+    print("⚠️ Invalid OPENAI_API_TIMEOUT value. Falling back to 30 seconds.")
+    OPENAI_API_TIMEOUT = 30
+if not OPENAI_API_KEY:
     # Try reading from a file
-    key_file = "deepseek_api_key.txt"
+    key_file = "openai_api_key.txt"
     if os.path.exists(key_file):
         with open(key_file, "r") as f:
-            DEEPSEEK_API_KEY = f.read().strip()
-if not DEEPSEEK_API_KEY:
+            OPENAI_API_KEY = f.read().strip()
+if not OPENAI_API_KEY:
     # Fallback to normal input (visible)
-    DEEPSEEK_API_KEY = input("Enter your DeepSeek API key: ")
+    OPENAI_API_KEY = input("Enter your OpenAI API key: ")
 
-if not DEEPSEEK_API_KEY:
+if not OPENAI_API_KEY:
     print("ERROR: No API key provided. Exiting.")
     sys.exit(1)
 
@@ -102,14 +108,14 @@ html_content = '''<!DOCTYPE html>
 <body>
 <div class="container">
     <h1>📊 AI-Powered IT Project Effort Estimator (Internal)</h1>
-    <p style="text-align:center">Upload requirement documents (Word/PDF) → DeepSeek extracts parameters → Estimate → Chat → Export PDF</p>
+    <p style="text-align:center">Upload requirement documents (Word/PDF) → AI extracts parameters → Estimate → Chat → Export PDF</p>
 
     <div class="flex-row">
         <div class="left-panel">
             <div class="upload-area">
                 <h3>📄 Upload Business Requirement Documents</h3>
                 <input type="file" id="docFiles" multiple accept=".docx,.pdf">
-                <button type="button" id="uploadBtn">🤖 Extract with DeepSeek</button>
+                <button type="button" id="uploadBtn">🤖 Extract with AI</button>
                 <div id="uploadStatus" class="status"></div>
             </div>
 
@@ -183,7 +189,7 @@ html_content = '''<!DOCTYPE html>
         for (let i = 0; i < files.length; i++) {
             formData.append('documents', files[i]);
         }
-        document.getElementById('uploadStatus').innerText = '🤖 Sending to DeepSeek AI...';
+        document.getElementById('uploadStatus').innerText = '🤖 Sending to AI for extraction...';
         try {
             const response = await fetch('/upload', { method: 'POST', body: formData });
             const data = await response.json();
@@ -413,7 +419,7 @@ with open('scaler.pkl', 'wb') as f:
     pickle.dump(scaler, f)
 print("✅ Model and scaler saved")
 
-# ---------- 6. Flask app with DeepSeek API ----------
+# ---------- 6. Flask app with OpenAI API ----------
 from flask import Flask, request, jsonify, render_template, make_response
 import io
 import json
@@ -458,8 +464,8 @@ def predict_total_effort(features):
     total = X_scaled @ weights + bias
     return float(total[0])
 
-# ---------- DeepSeek API helper ----------
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+# ---------- OpenAI API helper ----------
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 DEEPSEEK_TIMEOUT_SECONDS = 30
 DEEPSEEK_MAX_RETRIES = 3
 DEEPSEEK_BACKOFF_BASE_SECONDS = 1
@@ -514,17 +520,17 @@ def _circuit_remaining_seconds():
     with _deepseek_circuit_lock:
         return int(max(1, _deepseek_circuit_open_until - time.time()))
 
-def call_deepseek(prompt, system_message="You are a helpful assistant."):
+def call_openai(prompt, system_message="You are a helpful assistant."):
     if _is_circuit_open():
         remaining = _circuit_remaining_seconds()
-        raise DeepSeekConnectionError(f"DeepSeek service temporarily unavailable after repeated failures. Retry in ~{remaining}s.")
+        raise DeepSeekConnectionError(f"OpenAI service temporarily unavailable after repeated failures. Retry in ~{remaining}s.")
 
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": system_message},
             {"role": "user", "content": prompt}
@@ -536,53 +542,53 @@ def call_deepseek(prompt, system_message="You are a helpful assistant."):
 
     for attempt in range(1, DEEPSEEK_MAX_RETRIES + 1):
         try:
-            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=DEEPSEEK_TIMEOUT_SECONDS)
+            response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=OPENAI_API_TIMEOUT)
             if response.status_code == 429:
-                raise DeepSeekRateLimitError("DeepSeek API rate limit reached. Please wait and try again.")
+                raise DeepSeekRateLimitError("OpenAI API rate limit reached. Please wait and try again.")
             if response.status_code >= 500:
-                raise DeepSeekResponseError(f"DeepSeek API server error (HTTP {response.status_code}).")
+                raise DeepSeekResponseError(f"OpenAI API server error (HTTP {response.status_code}).")
             if response.status_code != 200:
-                raise DeepSeekResponseError(f"DeepSeek API request failed (HTTP {response.status_code}). {response.text[:200]}")
+                raise DeepSeekResponseError(f"OpenAI API request failed (HTTP {response.status_code}). {response.text[:200]}")
 
             try:
                 content = response.json()["choices"][0]["message"]["content"]
             except Exception as e:
-                raise DeepSeekValidationError(f"DeepSeek response format invalid: {e}")
+                raise DeepSeekValidationError(f"OpenAI response format invalid: {e}")
 
             _reset_circuit_breaker()
             return content
         except requests.exceptions.Timeout as e:
-            last_error = DeepSeekTimeoutError(f"DeepSeek API timeout ({DEEPSEEK_TIMEOUT_SECONDS}s). Please try again.")
-            logger.warning("DeepSeek timeout on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+            last_error = DeepSeekTimeoutError(f"OpenAI API timeout ({OPENAI_API_TIMEOUT}s). Please try again.")
+            logger.warning("OpenAI timeout on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
         except requests.exceptions.ConnectionError as e:
-            last_error = DeepSeekConnectionError("Cannot connect to DeepSeek API. Check your network.")
-            logger.warning("DeepSeek connection error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+            last_error = DeepSeekConnectionError("Cannot connect to OpenAI API. Check your network.")
+            logger.warning("OpenAI connection error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
         except DeepSeekRateLimitError as e:
             _record_circuit_failure()
-            logger.warning("DeepSeek rate limited on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+            logger.warning("OpenAI rate limited on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
             raise e
         except DeepSeekValidationError:
-            logger.warning("DeepSeek validation error on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+            logger.warning("OpenAI validation error on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
             raise
         except DeepSeekResponseError as e:
             last_error = e
-            logger.warning("DeepSeek API response error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+            logger.warning("OpenAI API response error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
         except requests.exceptions.RequestException as e:
-            last_error = DeepSeekConnectionError(f"DeepSeek request failed: {e}")
-            logger.warning("DeepSeek request exception on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+            last_error = DeepSeekConnectionError(f"OpenAI request failed: {e}")
+            logger.warning("OpenAI request exception on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
         except Exception as e:
-            logger.exception("Unexpected DeepSeek error")
-            raise DeepSeekError(f"DeepSeek error: {e}")
+            logger.exception("Unexpected OpenAI error")
+            raise DeepSeekError(f"OpenAI error: {e}")
 
         if attempt < DEEPSEEK_MAX_RETRIES:
             wait_seconds = min(DEEPSEEK_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), DEEPSEEK_MAX_BACKOFF_SECONDS)
-            logger.info("Retrying DeepSeek call in %ss (attempt %s/%s)", wait_seconds, attempt + 1, DEEPSEEK_MAX_RETRIES)
+            logger.info("Retrying OpenAI call in %ss (attempt %s/%s)", wait_seconds, attempt + 1, DEEPSEEK_MAX_RETRIES)
             time.sleep(wait_seconds)
 
     _record_circuit_failure()
     if isinstance(last_error, DeepSeekError):
         raise last_error
-    raise DeepSeekError("DeepSeek call failed after retries.")
+    raise DeepSeekError("OpenAI call failed after retries.")
 
 # ---------- Document extraction ----------
 def extract_text_from_docx(file_bytes):
@@ -596,10 +602,9 @@ def extract_text_from_pdf(file_bytes):
             text += page.extract_text() or ""
     return text
 
-def extract_params_with_deepseek(texts):
+def extract_params_with_openai(texts):
     if not texts:
         raise DeepSeekValidationError("No document text was provided for extraction.")
-
     combined = "\n\n--- NEXT DOCUMENT ---\n\n".join(texts)
     if len(combined) > 80000:
         combined = combined[:80000] + "...[truncated]"
@@ -622,12 +627,12 @@ Document text:
 {combined}
 """
     system_msg = "You are an expert IT project estimator. Output only valid JSON."
-    resp_text = call_deepseek(prompt, system_msg)
+    resp_text = call_openai(prompt, system_msg)
     resp_text = re.sub(r'```json\s*|\s*```', '', resp_text.strip())
     try:
         params = json.loads(resp_text)
         if not isinstance(params, dict):
-            raise DeepSeekValidationError(f"DeepSeek response must be a JSON object (dict), but received {type(params).__name__}.")
+            raise DeepSeekValidationError(f"OpenAI response must be a JSON object (dict), but received {type(params).__name__}.")
         params['req_count'] = max(1, min(500, int(params.get('req_count', 50))))
         params['complexity'] = max(1.0, min(5.0, float(params.get('complexity', 3.0))))
         params['team_exp'] = max(0.0, min(15.0, float(params.get('team_exp', 3.0))))
@@ -640,11 +645,11 @@ Document text:
     except DeepSeekValidationError:
         raise
     except json.JSONDecodeError as e:
-        raise DeepSeekValidationError(f"DeepSeek returned invalid JSON: {resp_text[:200]}... Error: {e}")
+        raise DeepSeekValidationError(f"OpenAI returned invalid JSON: {resp_text[:200]}... Error: {e}")
     except (TypeError, ValueError) as e:
-        raise DeepSeekValidationError(f"DeepSeek returned invalid parameter types/values: {e}")
+        raise DeepSeekValidationError(f"OpenAI returned invalid parameter types/values: {e}")
     except Exception as e:
-        raise DeepSeekValidationError(f"DeepSeek response invalid: {resp_text[:200]}... Error: {e}")
+        raise DeepSeekValidationError(f"OpenAI response invalid: {resp_text[:200]}... Error: {e}")
 
 @app.route('/')
 def index():
@@ -708,23 +713,23 @@ def upload_documents():
         return jsonify({'error': 'No readable text extracted from uploaded documents.'}), 400
 
     try:
-        params = extract_params_with_deepseek(texts)
+        params = extract_params_with_openai(texts)
         return jsonify(params)
     except DeepSeekRateLimitError as e:
         logger.warning("Upload extraction rate-limited: %s", e)
-        return jsonify({'error': 'DeepSeek extraction failed due to API rate limits. Please wait and try again.'}), 429
+        return jsonify({'error': 'OpenAI extraction failed due to API rate limits. Please wait and try again.'}), 429
     except DeepSeekTimeoutError as e:
         logger.warning("Upload extraction timed out: %s", e)
-        return jsonify({'error': 'DeepSeek API timeout. Please try again.'}), 504
+        return jsonify({'error': 'OpenAI API timeout. Please try again.'}), 504
     except DeepSeekConnectionError as e:
         logger.warning("Upload extraction connection issue: %s", e)
-        return jsonify({'error': 'Cannot connect to DeepSeek API. Please check your network and API availability.'}), 503
+        return jsonify({'error': 'Cannot connect to OpenAI API. Please check your network and API availability.'}), 503
     except DeepSeekValidationError as e:
         logger.warning("Upload extraction validation issue: %s", e)
-        return jsonify({'error': 'DeepSeek extraction returned invalid data. Please retry.'}), 502
+        return jsonify({'error': 'OpenAI extraction returned invalid data. Please retry.'}), 502
     except DeepSeekError as e:
-        logger.exception("Upload extraction DeepSeek error")
-        return jsonify({'error': 'DeepSeek extraction failed. Common issues: expired API key, missing permissions, or API rate limits. Please verify credentials and try again.'}), 502
+        logger.exception("Upload extraction OpenAI error")
+        return jsonify({'error': 'OpenAI extraction failed. Common issues: expired API key, missing permissions, or API rate limits. Please verify credentials and try again.'}), 502
     except Exception as e:
         logger.exception("Unexpected upload extraction error")
         return jsonify({'error': 'Unexpected error during document extraction. Please try again.'}), 500
@@ -757,19 +762,19 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
     system_msg = "You are an AI assistant helping a project manager understand an effort estimation."
 
     try:
-        answer = call_deepseek(prompt, system_msg)
+        answer = call_openai(prompt, system_msg)
         return jsonify({'answer': answer})
     except DeepSeekRateLimitError as e:
         logger.warning("Chat rate-limited: %s", e)
-        fallback = f"I'm currently rate-limited by DeepSeek. Please retry shortly. Meanwhile, based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate appears directionally reasonable."
+        fallback = f"I'm currently rate-limited by OpenAI. Please retry shortly. Meanwhile, based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate appears directionally reasonable."
         return jsonify({'answer': fallback}), 200
     except (DeepSeekTimeoutError, DeepSeekConnectionError, DeepSeekResponseError, DeepSeekValidationError, DeepSeekError) as e:
-        logger.warning("Chat DeepSeek fallback triggered: %s", e)
-        fallback = f"I'm having trouble reaching DeepSeek right now. Based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate still looks directionally reasonable. Please verify token/permissions and network, then try again."
+        logger.warning("Chat OpenAI fallback triggered: %s", e)
+        fallback = f"I'm having trouble reaching OpenAI right now. Based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate still looks directionally reasonable. Please verify token/permissions and network, then try again."
         return jsonify({'answer': fallback}), 200
     except Exception as e:
         logger.exception("Unexpected chat error")
-        fallback = f"I'm having trouble connecting to DeepSeek: {str(e)}. However, based on the parameters (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate seems reasonable. Please check your API key and network."
+        fallback = "Unable to connect to OpenAI. Please verify your API key and network connection."
         return jsonify({'answer': fallback}), 200
 
 @app.route('/export_pdf', methods=['POST'])
