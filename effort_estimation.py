@@ -423,8 +423,11 @@ print("✅ Model and scaler saved")
 from flask import Flask, request, jsonify, render_template, make_response
 import io
 import json
+import logging
 import re
 import requests
+import threading
+import time
 from docx import Document
 import pdfplumber
 from reportlab.lib.pagesizes import A4
@@ -436,6 +439,10 @@ from reportlab.lib.units import inch
 # --- FIX: Use absolute path for templates ---
 app = Flask(__name__, template_folder=os.path.join(LOCAL_FOLDER_PATH, 'templates'))
 app.secret_key = os.urandom(24)
+
+LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("effort_estimator")
 
 # Load model and scaler
 with open('effort_model.pkl', 'rb') as f:
@@ -459,8 +466,65 @@ def predict_total_effort(features):
 
 # ---------- OpenAI API helper ----------
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+DEEPSEEK_TIMEOUT_SECONDS = 30
+DEEPSEEK_MAX_RETRIES = 3
+DEEPSEEK_BACKOFF_BASE_SECONDS = 1
+UPLOAD_PROCESSING_TIMEOUT_SECONDS = 45
+DOCX_EXTENSION = '.docx'
+PDF_EXTENSION = '.pdf'
+SUPPORTED_UPLOAD_EXTENSIONS = (DOCX_EXTENSION, PDF_EXTENSION)
+CIRCUIT_BREAKER_THRESHOLD = 3
+CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
+DEEPSEEK_MAX_BACKOFF_SECONDS = 30
+_deepseek_failures = 0
+_deepseek_circuit_open_until = 0.0
+_deepseek_circuit_lock = threading.Lock()
+
+class DeepSeekError(Exception):
+    pass
+
+class DeepSeekTimeoutError(DeepSeekError):
+    pass
+
+class DeepSeekConnectionError(DeepSeekError):
+    pass
+
+class DeepSeekRateLimitError(DeepSeekError):
+    pass
+
+class DeepSeekValidationError(DeepSeekError):
+    pass
+
+class DeepSeekResponseError(DeepSeekError):
+    pass
+
+def _reset_circuit_breaker():
+    global _deepseek_failures, _deepseek_circuit_open_until
+    with _deepseek_circuit_lock:
+        _deepseek_failures = 0
+        _deepseek_circuit_open_until = 0.0
+
+def _record_circuit_failure():
+    global _deepseek_failures, _deepseek_circuit_open_until
+    with _deepseek_circuit_lock:
+        _deepseek_failures += 1
+        if _deepseek_failures >= CIRCUIT_BREAKER_THRESHOLD:
+            _deepseek_circuit_open_until = time.time() + CIRCUIT_BREAKER_COOLDOWN_SECONDS
+            logger.warning("DeepSeek circuit breaker opened for %d seconds after %d consecutive failures.", CIRCUIT_BREAKER_COOLDOWN_SECONDS, _deepseek_failures)
+
+def _is_circuit_open():
+    with _deepseek_circuit_lock:
+        return time.time() < _deepseek_circuit_open_until
+
+def _circuit_remaining_seconds():
+    with _deepseek_circuit_lock:
+        return int(max(1, _deepseek_circuit_open_until - time.time()))
 
 def call_openai(prompt, system_message="You are a helpful assistant."):
+    if _is_circuit_open():
+        remaining = _circuit_remaining_seconds()
+        raise DeepSeekConnectionError(f"OpenAI service temporarily unavailable after repeated failures. Retry in ~{remaining}s.")
+
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
@@ -474,17 +538,57 @@ def call_openai(prompt, system_message="You are a helpful assistant."):
         "temperature": 0.3,
         "max_tokens": 2000
     }
-    try:
-        response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=OPENAI_API_TIMEOUT)
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code} from OpenAI API")
-        return response.json()["choices"][0]["message"]["content"]
-    except requests.exceptions.Timeout:
-        raise Exception(f"OpenAI API timeout ({OPENAI_API_TIMEOUT}s). Please try again.")
-    except requests.exceptions.ConnectionError:
-        raise Exception("Cannot connect to OpenAI API. Check your network.")
-    except Exception as e:
-        raise Exception(f"OpenAI error: {str(e)}")
+    last_error = None
+
+    for attempt in range(1, DEEPSEEK_MAX_RETRIES + 1):
+        try:
+            response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=OPENAI_API_TIMEOUT)
+            if response.status_code == 429:
+                raise DeepSeekRateLimitError("OpenAI API rate limit reached. Please wait and try again.")
+            if response.status_code >= 500:
+                raise DeepSeekResponseError(f"OpenAI API server error (HTTP {response.status_code}).")
+            if response.status_code != 200:
+                raise DeepSeekResponseError(f"OpenAI API request failed (HTTP {response.status_code}). {response.text[:200]}")
+
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                raise DeepSeekValidationError(f"OpenAI response format invalid: {e}")
+
+            _reset_circuit_breaker()
+            return content
+        except requests.exceptions.Timeout as e:
+            last_error = DeepSeekTimeoutError(f"OpenAI API timeout ({OPENAI_API_TIMEOUT}s). Please try again.")
+            logger.warning("OpenAI timeout on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+        except requests.exceptions.ConnectionError as e:
+            last_error = DeepSeekConnectionError("Cannot connect to OpenAI API. Check your network.")
+            logger.warning("OpenAI connection error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+        except DeepSeekRateLimitError as e:
+            _record_circuit_failure()
+            logger.warning("OpenAI rate limited on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+            raise e
+        except DeepSeekValidationError:
+            logger.warning("OpenAI validation error on attempt %s/%s", attempt, DEEPSEEK_MAX_RETRIES)
+            raise
+        except DeepSeekResponseError as e:
+            last_error = e
+            logger.warning("OpenAI API response error on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+        except requests.exceptions.RequestException as e:
+            last_error = DeepSeekConnectionError(f"OpenAI request failed: {e}")
+            logger.warning("OpenAI request exception on attempt %s/%s: %s", attempt, DEEPSEEK_MAX_RETRIES, e)
+        except Exception as e:
+            logger.exception("Unexpected OpenAI error")
+            raise DeepSeekError(f"OpenAI error: {e}")
+
+        if attempt < DEEPSEEK_MAX_RETRIES:
+            wait_seconds = min(DEEPSEEK_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), DEEPSEEK_MAX_BACKOFF_SECONDS)
+            logger.info("Retrying OpenAI call in %ss (attempt %s/%s)", wait_seconds, attempt + 1, DEEPSEEK_MAX_RETRIES)
+            time.sleep(wait_seconds)
+
+    _record_circuit_failure()
+    if isinstance(last_error, DeepSeekError):
+        raise last_error
+    raise DeepSeekError("OpenAI call failed after retries.")
 
 # ---------- Document extraction ----------
 def extract_text_from_docx(file_bytes):
@@ -499,6 +603,8 @@ def extract_text_from_pdf(file_bytes):
     return text
 
 def extract_params_with_openai(texts):
+    if not texts:
+        raise DeepSeekValidationError("No document text was provided for extraction.")
     combined = "\n\n--- NEXT DOCUMENT ---\n\n".join(texts)
     if len(combined) > 80000:
         combined = combined[:80000] + "...[truncated]"
@@ -525,6 +631,8 @@ Document text:
     resp_text = re.sub(r'```json\s*|\s*```', '', resp_text.strip())
     try:
         params = json.loads(resp_text)
+        if not isinstance(params, dict):
+            raise DeepSeekValidationError(f"OpenAI response must be a JSON object (dict), but received {type(params).__name__}.")
         params['req_count'] = max(1, min(500, int(params.get('req_count', 50))))
         params['complexity'] = max(1.0, min(5.0, float(params.get('complexity', 3.0))))
         params['team_exp'] = max(0.0, min(15.0, float(params.get('team_exp', 3.0))))
@@ -534,8 +642,14 @@ Document text:
         params['deadline'] = max(0.5, min(2.0, float(params.get('deadline', 1.0))))
         params['domain'] = max(1.0, min(5.0, float(params.get('domain', 3.0))))
         return params
+    except DeepSeekValidationError:
+        raise
+    except json.JSONDecodeError as e:
+        raise DeepSeekValidationError(f"OpenAI returned invalid JSON: {resp_text[:200]}... Error: {e}")
+    except (TypeError, ValueError) as e:
+        raise DeepSeekValidationError(f"OpenAI returned invalid parameter types/values: {e}")
     except Exception as e:
-        raise ValueError(f"OpenAI response invalid: {resp_text[:200]}... Error: {e}")
+        raise DeepSeekValidationError(f"OpenAI response invalid: {resp_text[:200]}... Error: {e}")
 
 @app.route('/')
 def index():
@@ -560,39 +674,65 @@ def upload_documents():
     files = request.files.getlist('documents')
     if len(files) == 0:
         return jsonify({'error': 'Empty file list'}), 400
+
+    start_time = time.time()
     texts = []
+    supported_file_seen = False
     for file in files:
+        if (time.time() - start_time) > UPLOAD_PROCESSING_TIMEOUT_SECONDS:
+            logger.warning("Upload document processing timed out after %ss", UPLOAD_PROCESSING_TIMEOUT_SECONDS)
+            return jsonify({'error': f'Document processing timed out after {UPLOAD_PROCESSING_TIMEOUT_SECONDS} seconds. Please try fewer/smaller files.'}), 408
         if file.filename == '':
             continue
+
+        filename_lower = file.filename.lower()
+        if filename_lower.endswith(SUPPORTED_UPLOAD_EXTENSIONS):
+            supported_file_seen = True
+
         file_bytes = file.read()
+        if not file_bytes:
+            logger.info("Skipping empty uploaded file: %s", file.filename)
+            continue
+
         try:
-            if file.filename.endswith('.docx'):
+            if filename_lower.endswith(DOCX_EXTENSION):
                 text = extract_text_from_docx(file_bytes)
-            elif file.filename.endswith('.pdf'):
+            elif filename_lower.endswith(PDF_EXTENSION):
                 text = extract_text_from_pdf(file_bytes)
             else:
                 continue
             if text.strip():
                 texts.append(text)
         except Exception:
+            logger.exception("Failed to extract text from file: %s", file.filename)
             continue
+
+    if not supported_file_seen:
+        return jsonify({'error': 'No supported files found. Please upload .docx or .pdf files.'}), 400
     if not texts:
-        return jsonify({'error': 'No readable text extracted'}), 400
+        return jsonify({'error': 'No readable text extracted from uploaded documents.'}), 400
+
     try:
         params = extract_params_with_openai(texts)
         return jsonify(params)
-    except requests.exceptions.Timeout as e:
-        print(f"❌ OpenAI extraction timeout: {e}")
-        return jsonify({'error': 'OpenAI extraction failed due to timeout. Please try again in a moment.'}), 500
-    except requests.exceptions.ConnectionError as e:
-        print(f"❌ OpenAI extraction connection error: {e}")
-        return jsonify({'error': 'OpenAI extraction failed due to connection error. Please verify your API key and network.'}), 500
-    except ValueError as e:
-        print(f"❌ OpenAI extraction parsing error: {e}")
-        return jsonify({'error': 'OpenAI extraction failed due to response parsing error. Please try again.'}), 500
+    except DeepSeekRateLimitError as e:
+        logger.warning("Upload extraction rate-limited: %s", e)
+        return jsonify({'error': 'OpenAI extraction failed due to API rate limits. Please wait and try again.'}), 429
+    except DeepSeekTimeoutError as e:
+        logger.warning("Upload extraction timed out: %s", e)
+        return jsonify({'error': 'OpenAI API timeout. Please try again.'}), 504
+    except DeepSeekConnectionError as e:
+        logger.warning("Upload extraction connection issue: %s", e)
+        return jsonify({'error': 'Cannot connect to OpenAI API. Please check your network and API availability.'}), 503
+    except DeepSeekValidationError as e:
+        logger.warning("Upload extraction validation issue: %s", e)
+        return jsonify({'error': 'OpenAI extraction returned invalid data. Please retry.'}), 502
+    except DeepSeekError as e:
+        logger.exception("Upload extraction OpenAI error")
+        return jsonify({'error': 'OpenAI extraction failed. Common issues: expired API key, missing permissions, or API rate limits. Please verify credentials and try again.'}), 502
     except Exception as e:
-        print(f"❌ OpenAI extraction error ({type(e).__name__}): {e}")
-        return jsonify({'error': 'OpenAI extraction failed. Please verify your API key and try again.'}), 500
+        logger.exception("Unexpected upload extraction error")
+        return jsonify({'error': 'Unexpected error during document extraction. Please try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -624,8 +764,16 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
     try:
         answer = call_openai(prompt, system_msg)
         return jsonify({'answer': answer})
+    except DeepSeekRateLimitError as e:
+        logger.warning("Chat rate-limited: %s", e)
+        fallback = f"I'm currently rate-limited by OpenAI. Please retry shortly. Meanwhile, based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate appears directionally reasonable."
+        return jsonify({'answer': fallback}), 200
+    except (DeepSeekTimeoutError, DeepSeekConnectionError, DeepSeekResponseError, DeepSeekValidationError, DeepSeekError) as e:
+        logger.warning("Chat OpenAI fallback triggered: %s", e)
+        fallback = f"I'm having trouble reaching OpenAI right now. Based on your inputs (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate still looks directionally reasonable. Please verify token/permissions and network, then try again."
+        return jsonify({'answer': fallback}), 200
     except Exception as e:
-        print(f"❌ Chat error: {e}")
+        logger.exception("Unexpected chat error")
         fallback = "Unable to connect to OpenAI. Please verify your API key and network connection."
         return jsonify({'answer': fallback}), 200
 
@@ -693,4 +841,6 @@ if __name__ == "__main__":
     print("🌐 Open http://localhost:5001 in your browser")
     print("⚠️  Press Ctrl+C to stop the server")
     print("="*60 + "\n")
-    app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)
+    is_production = os.environ.get("APP_ENV", "").lower() in {"prod", "production"}
+    debug_mode = os.environ.get("FLASK_DEBUG", "").lower() == "true" and not is_production
+    app.run(host='0.0.0.0', port=5001, debug=debug_mode, use_reloader=False)
