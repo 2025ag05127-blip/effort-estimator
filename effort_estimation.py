@@ -38,7 +38,10 @@ print(f"Working directory: {os.getcwd()}")
 # Try environment variable first
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
-OPENAI_API_TIMEOUT = int(os.environ.get("OPENAI_API_TIMEOUT", "30"))
+try:
+    OPENAI_API_TIMEOUT = int(os.environ.get("OPENAI_API_TIMEOUT", "30"))
+except ValueError:
+    OPENAI_API_TIMEOUT = 30
 if not OPENAI_API_KEY:
     # Try reading from a file
     key_file = "openai_api_key.txt"
@@ -588,7 +591,7 @@ def upload_documents():
         return jsonify({'error': 'OpenAI extraction failed due to response parsing error. Please try again.'}), 500
     except Exception as e:
         print(f"❌ OpenAI extraction error ({type(e).__name__}): {e}")
-        return jsonify({'error': 'OpenAI extraction failed due to an unexpected API error (for example authentication or rate limiting). Please verify your configuration and try again.'}), 500
+        return jsonify({'error': 'OpenAI extraction failed. Please verify your API key and try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -622,7 +625,7 @@ Provide a concise, helpful answer (max 150 words). If the question is about risk
         return jsonify({'answer': answer})
     except Exception as e:
         print(f"❌ Chat error: {e}")
-        fallback = "I'm experiencing an issue communicating with OpenAI right now, so I can't provide a reliable AI analysis at the moment. Please check your API key and network, then try again."
+        fallback = "Unable to connect to OpenAI. Please verify your API key and network connection."
         return jsonify({'answer': fallback}), 200
 
 @app.route('/export_pdf', methods=['POST'])
