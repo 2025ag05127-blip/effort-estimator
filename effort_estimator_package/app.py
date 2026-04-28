@@ -394,6 +394,13 @@ def _explanation_text(features: List[float], total: float, use_copilot: bool = T
     return "\n".join(lines)
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _chat_response(question: str, params: Dict[str, Any], total: Any, chat_history: List[Dict[str, str]]) -> str:
     if OPENAI_API_KEY:
         prompt = f"""
@@ -425,11 +432,15 @@ User question: {question}
         "I can help interpret the estimate even without an LLM key.",
         f"Current total: {total} person-hours.",
     ]
-    if params.get("tech_unc", 0) >= 0.6:
+    tech_unc = _as_float(params.get("tech_unc", 0), 0.0)
+    integrations = _as_float(params.get("integrations", 0), 0.0)
+    deadline = _as_float(params.get("deadline", 1), 1.0)
+
+    if tech_unc >= 0.6:
         answer.append("High technical uncertainty is the biggest risk driver.")
-    if params.get("integrations", 0) >= 5:
+    if integrations >= 5:
         answer.append("Integration count suggests extra coordination and test effort.")
-    if params.get("deadline", 1) < 1:
+    if deadline < 1:
         answer.append("Tight deadline usually increases delivery risk.")
     answer.append(f"Question noted: {question}")
     return " ".join(answer)

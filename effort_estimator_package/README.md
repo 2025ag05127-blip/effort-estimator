@@ -12,13 +12,19 @@ This folder contains the packaged version of the effort estimator app.
 
 ## Run
 
-From the repository root:
+From inside this folder or from the repository root:
+
+```bash
+python -m effort_estimator_package.upgraded_estimator
+```
+
+You can also run the root launcher:
 
 ```bash
 python upgraded_estimator.py
 ```
 
-The launcher imports this package and starts the Flask app.
+Both launch the same packaged Flask app.
 
 ## Optional OpenAI support
 
