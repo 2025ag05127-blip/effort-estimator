@@ -6,6 +6,9 @@
 import os
 import sys
 import subprocess
+import json
+import re
+import requests
 
 # ---------- 1. Check / install required packages ----------
 required = ['flask', 'python-docx', 'pdfplumber', 'reportlab', 'pandas', 'scikit-learn', 'requests', 'openai', 'numpy']
@@ -20,16 +23,13 @@ if missing:
     print(f"Installing missing packages: {missing}")
     subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
 
-# ---------- 2. Configure project folder (MANUAL DOWNLOAD) ----------
-# *** CHANGE THIS TO THE PATH WHERE YOU UNZIPPED THE GOOGLE DRIVE FOLDER ***
-LOCAL_FOLDER_PATH = "/Users/ll/Downloads/effort_estimator_app"
+# ---------- 2. Configure project folder ----------
+# Auto-detect the project folder (current directory or specified path)
+LOCAL_FOLDER_PATH = os.environ.get("EFFORT_ESTIMATOR_PATH", os.getcwd())
 
-if not os.path.exists(LOCAL_FOLDER_PATH):
-    os.makedirs(LOCAL_FOLDER_PATH, exist_ok=True)
-    print(f"Created empty folder {LOCAL_FOLDER_PATH}.")
-    print("Please manually download the Google Drive folder and place its contents here.")
-    print("Then rerun this script.")
-    sys.exit(1)
+# Create the path if it doesn't exist (for first run)
+os.makedirs(LOCAL_FOLDER_PATH, exist_ok=True)
+print(f"✅ Project folder: {LOCAL_FOLDER_PATH}")
 
 os.chdir(LOCAL_FOLDER_PATH)
 print(f"Working directory: {os.getcwd()}")
@@ -422,9 +422,6 @@ print("✅ Model and scaler saved")
 # ---------- 6. Flask app with OpenAI API ----------
 from flask import Flask, request, jsonify, render_template, make_response
 import io
-import json
-import re
-import requests
 from docx import Document
 import pdfplumber
 from reportlab.lib.pagesizes import A4
@@ -460,7 +457,15 @@ def predict_total_effort(features):
 # ---------- OpenAI API helper ----------
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
-def call_openai(prompt, system_message="You are a helpful assistant."):
+# ---------- Copilot Support (GitHub Copilot Chat) ----------
+# Copilot can be used to:
+# 1. Enhance prompts for better effort estimation
+# 2. Generate detailed project risk assessments
+# 3. Create implementation roadmaps
+# 4. Suggest best practices for the extracted parameters
+COPILOT_ENABLED = os.environ.get("COPILOT_ENABLED", "false").lower() == "true"
+
+def call_openai(prompt, system_message="You are a helpful assistant.", use_copilot_enhancement=False):
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"

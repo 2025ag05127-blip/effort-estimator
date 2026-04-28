@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Effort Estimator with BRS Extraction</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background: #f0f2f5; }
+        .container { max-width: 1400px; margin: auto; background: white; padding: 25px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1, h2 { color: #2c3e50; text-align: center; }
+        .section { margin: 30px 0; }
+        .upload-section { background: #e8f4f8; padding: 20px; border-radius: 12px; border: 2px dashed #2980b9; }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap: 20px; margin-bottom: 30px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-weight: 600; margin-bottom: 5px; color: #1e466e; }
+        .form-group input { padding: 10px; border: 1px solid #bdc3c7; border-radius: 8px; font-size: 14px; }
+        button { background: #2c3e50; color: white; padding: 12px 28px; border: none; border-radius: 40px; cursor: pointer; font-size: 16px; font-weight: bold; display: inline-block; margin: 10px 5px; transition: 0.2s; }
+        button:hover { background: #1a252f; transform: scale(1.02); }
+        .upload-btn { background: #27ae60; }
+        .upload-btn:hover { background: #1e8449; }
+        .results { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 25px; }
+        .chart-container { flex: 1.2; min-width: 320px; }
+        .table-container { flex: 0.8; min-width: 300px; }
+        .math-box { background: #fef5e7; padding: 20px; border-radius: 12px; border-left: 5px solid #f39c12; margin-top: 20px; font-family: 'Courier New', monospace; }
+        .explanation-box { background: #f8f9fa; padding: 20px; border-radius: 12px; margin-top: 25px; border-left: 5px solid #2c3e50; font-size: 15px; line-height: 1.5; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #2c3e50; color: white; }
+        .total { font-size: 1.5em; font-weight: bold; text-align: center; background: #e3f2fd; padding: 12px; border-radius: 40px; margin: 20px 0; }
+        .error { color: #c0392b; padding: 10px; background: #fadbd8; border-radius: 6px; margin: 10px 0; }
+        .success { color: #27ae60; padding: 10px; background: #d5f4e6; border-radius: 6px; margin: 10px 0; }
+        .loader { display: none; text-align: center; margin: 20px; }
+        .math-formula { background: white; padding: 10px; border-radius: 6px; border: 1px solid #bdc3c7; margin: 5px 0; font-size: 14px; }
+        .feature-extraction { background: #e8f8f5; padding: 15px; border-radius: 8px; border-left: 4px solid #16a085; margin: 10px 0; }
+        .feature-item { margin: 8px 0; padding: 8px; background: white; border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🤖 AI-Powered Effort Estimator with BRS Document Analysis</h1>
+    <p style="text-align:center; color: #7f8c8d;">Upload BRS → AI Extracts Features → Neural Network Predicts → View Math Calculations</p>
+
+    <div class="section upload-section">
+        <h2>📄 Step 1: Upload Business Requirements Specification (BRS)</h2>
+        <input type="file" id="docFiles" multiple accept=".pdf,.docx,.txt" style="margin: 10px 0;">
+        <button id="uploadBtn" class="upload-btn">🔍 Extract Features with AI/LLM</button>
+        <div id="uploadStatus"></div>
+    </div>
+
+    <div class="section">
+        <h2>⚙️ Step 2: Review & Adjust Parameters</h2>
+        <form id="effortForm">
+            <div class="form-grid">
+                <div class="form-group"><label>📋 Requirements Count</label><input type="number" id="req_count" value="60" step="1" required></div>
+                <div class="form-group"><label>⚙️ Complexity (1-5)</label><input type="number" id="complexity" value="3" step="0.1" min="1" max="5" required></div>
+                <div class="form-group"><label>👥 Team Experience (years)</label><input type="number" id="team_exp" value="5" step="0.5" min="0" max="15" required></div>
+                <div class="form-group"><label>⚠️ Tech Uncertainty (0-1)</label><input type="number" id="tech_unc" value="0.5" step="0.05" min="0" max="1" required></div>
+                <div class="form-group"><label>🔌 Integrations</label><input type="number" id="integrations" value="5" step="1" min="0" required></div>
+                <div class="form-group"><label>📄 Documentation Quality (1-5)</label><input type="number" id="doc_quality" value="3" step="0.1" min="1" max="5" required></div>
+                <div class="form-group"><label>⏰ Deadline Pressure (0.5-2)</label><input type="number" id="deadline" value="1.0" step="0.1" min="0.5" max="2" required></div>
+                <div class="form-group"><label>🧠 Domain Knowledge (1-5)</label><input type="number" id="domain" value="3" step="0.1" min="1" max="5" required></div>
+            </div>
+            <div style="text-align: center;">
+                <button type="submit">🔮 Estimate Effort & Show Math</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="loader" class="loader">⏳ Running neural network prediction...</div>
+    
+    <div id="results" style="display:none;">
+        <h2>📊 Prediction Results</h2>
+        <div class="total" id="totalEffort"></div>
+        <div class="results">
+            <div class="chart-container"><canvas id="phaseChart"></canvas></div>
+            <div class="table-container"><table id="phaseTable"><thead><tr><th>Phase</th><th>Hours</th></tr></thead><tbody></tbody></table></div>
+        </div>
+
+        <h2>🧮 Mathematical Calculations</h2>
+        <div class="math-box" id="mathCalc"></div>
+
+        <h2>💡 AI-Generated Explanation</h2>
+        <div class="explanation-box" id="explanation"></div>
+    </div>
+    
+    <div id="errorMsg"></div>
+</div>
+
+<script>
+    const form = document.getElementById('effortForm');
+    const resultsDiv = document.getElementById('results');
+    const totalSpan = document.getElementById('totalEffort');
+    const tableBody = document.querySelector('#phaseTable tbody');
+    const explanationDiv = document.getElementById('explanation');
+    const mathDiv = document.getElementById('mathCalc');
+    const loader = document.getElementById('loader');
+    let chart;
+
+    // Upload BRS Document
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
+        const files = document.getElementById('docFiles').files;
+        if (files.length === 0) {
+            showStatus('❌ Please select at least one BRS document', 'error');
+            return;
+        }
+        const formData = new FormData();
+        for (let i = 0; i < files.length; i++) {
+            formData.append('documents', files[i]);
+        }
+        showStatus('🔍 Sending documents to AI for feature extraction...', 'loader');
+        try {
+            const response = await fetch('/extract_features', { method: 'POST', body: formData });
+            const data = await response.json();
+            if (response.ok) {
+                document.getElementById('req_count').value = data.req_count;
+                document.getElementById('complexity').value = data.complexity;
+                document.getElementById('team_exp').value = data.team_exp;
+                document.getElementById('tech_unc').value = data.tech_unc;
+                document.getElementById('integrations').value = data.integrations;
+                document.getElementById('doc_quality').value = data.doc_quality;
+                document.getElementById('deadline').value = data.deadline;
+                document.getElementById('domain').value = data.domain;
+                
+                let featureHtml = '<h3>✅ Extracted Features from BRS:</h3>';
+                featureHtml += '<div class="feature-extraction">' + data.extraction_details + '</div>';
+                document.getElementById('uploadStatus').innerHTML = featureHtml;
+            } else {
+                showStatus('❌ ' + (data.error || 'Extraction failed'), 'error');
+            }
+        } catch (err) {
+            showStatus('❌ Network error during upload', 'error');
+        }
+    });
+
+    function showStatus(msg, type) {
+        const statusDiv = document.getElementById('uploadStatus');
+        if (type === 'loader') statusDiv.innerHTML = '<div class="loader" style="display:block">' + msg + '</div>';
+        else if (type === 'error') statusDiv.innerHTML = '<div class="error">' + msg + '</div>';
+        else statusDiv.innerHTML = '<div class="success">' + msg + '</div>';
+    }
+
+    // Estimate Form Submit
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        loader.style.display = 'block';
+        resultsDiv.style.display = 'none';
+        document.getElementById('errorMsg').innerHTML = '';
+
+        const formData = {
+            req_count: parseFloat(document.getElementById('req_count').value),
+            complexity: parseFloat(document.getElementById('complexity').value),
+            team_exp: parseFloat(document.getElementById('team_exp').value),
+            tech_unc: parseFloat(document.getElementById('tech_unc').value),
+            integrations: parseFloat(document.getElementById('integrations').value),
+            doc_quality: parseFloat(document.getElementById('doc_quality').value),
+            deadline: parseFloat(document.getElementById('deadline').value),
+            domain: parseFloat(document.getElementById('domain').value)
+        };
+
+        try {
+            const response = await fetch('/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(formData)
+            });
+            const data = await response.json();
+            if (response.ok) {
+                displayResults(data, formData);
+            } else {
+                document.getElementById('errorMsg').innerHTML = '<div class="error">' + (data.error || 'Prediction failed') + '</div>';
+            }
+        } catch (err) {
+            document.getElementById('errorMsg').innerHTML = '<div class="error">Network error: ' + err.message + '</div>';
+        } finally {
+            loader.style.display = 'none';
+        }
+    });
+
+    function displayResults(data, inputs) {
+        resultsDiv.style.display = 'block';
+        totalSpan.innerText = `📊 Total Estimated Effort: ${data.total} person‑hours`;
+
+        // Fill table
+        tableBody.innerHTML = '';
+        const phaseNames = [];
+        const phaseHours = [];
+        data.phases.forEach(phase => {
+            phaseNames.push(phase.name);
+            phaseHours.push(phase.hours);
+            const row = tableBody.insertRow();
+            row.insertCell(0).innerText = phase.name;
+            row.insertCell(1).innerText = phase.hours.toFixed(1);
+        });
+
+        // Chart
+        if (chart) chart.destroy();
+        const ctx = document.getElementById('phaseChart').getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: phaseNames,
+                datasets: [{
+                    label: 'Effort (hours)',
+                    data: phaseHours,
+                    backgroundColor: 'rgba(44, 62, 80, 0.7)',
+                    borderColor: '#2c3e50',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: { y: { beginAtZero: true } }
+            }
+        });
+
+        // Display math calculations
+        mathDiv.innerHTML = data.math_calculation || '';
+        explanationDiv.innerText = data.explanation || '';
+    }
+</script>
+</body>
+</html>
