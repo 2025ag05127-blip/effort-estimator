@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Effort Estimator</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #f3f6fb;
+            --panel: rgba(255, 255, 255, 0.82);
+            --panel-strong: #ffffff;
+            --ink: #132238;
+            --muted: #5b6b7f;
+            --line: #d9e2ec;
+            --accent: #184e77;
+            --accent-2: #2a9d8f;
+            --warm: #f4a261;
+            --shadow: 0 18px 45px rgba(16, 24, 40, 0.12);
+            --radius: 20px;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at top left, rgba(24, 78, 119, 0.12), transparent 30%),
+                radial-gradient(circle at top right, rgba(42, 157, 143, 0.12), transparent 24%),
+                linear-gradient(180deg, #f9fbfe 0%, var(--bg) 100%);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        .shell {
+            max-width: 1480px;
+            margin: 0 auto;
+            padding: 32px 20px 40px;
+        }
+
+        .hero {
+            background: linear-gradient(135deg, #12324a 0%, #184e77 55%, #2a9d8f 100%);
+            color: white;
+            border-radius: 28px;
+            padding: 28px 28px 32px;
+            box-shadow: var(--shadow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            inset: auto -120px -120px auto;
+            width: 260px;
+            height: 260px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.12);
+            filter: blur(2px);
+        }
+
+        .hero-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero h1 {
+            margin: 0 0 8px;
+            font-size: clamp(2rem, 4vw, 3.2rem);
+            letter-spacing: -0.04em;
+        }
+
+        .hero p {
+            margin: 0;
+            max-width: 860px;
+            color: rgba(255,255,255,0.88);
+            line-height: 1.6;
+        }
+
+        .badge-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 18px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .badge {
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.14);
+            border: 1px solid rgba(255,255,255,0.2);
+            font-size: 0.92rem;
+            color: white;
+            backdrop-filter: blur(10px);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.95fr);
+            gap: 22px;
+            margin-top: 22px;
+        }
+
+        .card {
+            background: var(--panel);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.65);
+            box-shadow: var(--shadow);
+            border-radius: var(--radius);
+            padding: 22px;
+        }
+
+        .card h2 {
+            margin: 0 0 14px;
+            font-size: 1.15rem;
+            letter-spacing: -0.02em;
+        }
+
+        .section-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            border-radius: 999px;
+            padding: 8px 12px;
+            background: rgba(24, 78, 119, 0.08);
+            color: var(--accent);
+            font-weight: 700;
+            margin-bottom: 14px;
+        }
+
+        .upload-zone {
+            border: 1.5px dashed rgba(24, 78, 119, 0.35);
+            border-radius: 18px;
+            padding: 18px;
+            background: linear-gradient(180deg, rgba(24, 78, 119, 0.03), rgba(42, 157, 143, 0.04));
+            margin-bottom: 18px;
+        }
+
+        .upload-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        input[type="file"] {
+            max-width: 100%;
+            color: var(--muted);
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .field label {
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: var(--muted);
+        }
+
+        .field input {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 12px 14px;
+            font-size: 0.98rem;
+            outline: none;
+            background: rgba(255,255,255,0.96);
+        }
+
+        .field input:focus {
+            border-color: rgba(24, 78, 119, 0.55);
+            box-shadow: 0 0 0 4px rgba(24, 78, 119, 0.08);
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 18px;
+        }
+
+        .btn {
+            border: none;
+            border-radius: 14px;
+            padding: 12px 16px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+        }
+
+        .btn:hover { transform: translateY(-1px); }
+        .btn-primary { background: var(--accent); color: white; box-shadow: 0 10px 24px rgba(24, 78, 119, 0.26); }
+        .btn-secondary { background: var(--accent-2); color: white; box-shadow: 0 10px 24px rgba(42, 157, 143, 0.24); }
+        .btn-warm { background: var(--warm); color: #1d1408; box-shadow: 0 10px 24px rgba(244, 162, 97, 0.25); }
+
+        .right-stack, .results-stack { display: grid; gap: 22px; }
+
+        .status {
+            margin-top: 12px;
+            font-size: 0.96rem;
+            color: var(--muted);
+        }
+
+        .status.good { color: #13795b; }
+        .status.bad { color: #b42318; }
+
+        .results {
+            display: grid;
+            grid-template-columns: 1.1fr 0.9fr;
+            gap: 18px;
+            margin-top: 14px;
+        }
+
+        .total {
+            font-size: 1.6rem;
+            font-weight: 900;
+            color: var(--accent);
+            background: linear-gradient(180deg, rgba(24, 78, 119, 0.08), rgba(42, 157, 143, 0.08));
+            border-radius: 18px;
+            padding: 16px 18px;
+            margin-bottom: 14px;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 12px 14px;
+            text-align: left;
+            border-bottom: 1px solid #edf2f7;
+        }
+
+        th {
+            background: #12324a;
+            color: white;
+        }
+
+        .panel-box {
+            background: rgba(255,255,255,0.94);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 18px;
+        }
+
+        .math-card {
+            background: linear-gradient(180deg, rgba(244,162,97,0.10), rgba(255,255,255,0.96));
+            border: 1px solid rgba(244,162,97,0.26);
+            border-radius: 18px;
+            padding: 16px;
+            margin-top: 16px;
+        }
+
+        .math-table {
+            width: 100%;
+            margin-top: 14px;
+            font-size: 0.94rem;
+        }
+
+        .math-table th { background: #1d3557; }
+        .math-table td, .math-table th { border: 1px solid #edf2f7; }
+        .muted { color: var(--muted); }
+
+        .explanation-box {
+            white-space: pre-wrap;
+            line-height: 1.65;
+        }
+
+        .chat-box {
+            height: 460px;
+            overflow-y: auto;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 14px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(248,250,252,0.98));
+        }
+
+        .chat-message {
+            margin-bottom: 12px;
+            padding: 12px 14px;
+            border-radius: 16px;
+            line-height: 1.55;
+            max-width: 94%;
+        }
+
+        .chat-user {
+            margin-left: auto;
+            background: #dff3ff;
+            border: 1px solid #b7e3ff;
+        }
+
+        .chat-ai {
+            background: #f2f4f8;
+            border: 1px solid #e5e9f0;
+        }
+
+        .chat-input {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .chat-input input {
+            flex: 1;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 12px 14px;
+            font-size: 0.98rem;
+        }
+
+        .feature-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .feature-list div {
+            background: white;
+            border-radius: 12px;
+            border: 1px solid #edf2f7;
+            padding: 10px 12px;
+        }
+
+        .small-note {
+            color: rgba(255,255,255,0.9);
+            margin-top: 8px;
+            font-size: 0.96rem;
+        }
+
+        @media (max-width: 1100px) {
+            .grid, .results { grid-template-columns: 1fr; }
+            .chat-box { height: 360px; }
+        }
+
+        @media (max-width: 720px) {
+            .shell { padding: 18px 12px 28px; }
+            .card { padding: 16px; }
+            .form-grid { grid-template-columns: 1fr; }
+            .upload-row, .actions, .chat-input { flex-direction: column; align-items: stretch; }
+            .btn { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <section class="hero">
+            <div class="hero-top">
+                <div>
+                    <h1>Effort Estimator</h1>
+                    <p>Upload BRS documents, let the estimator extract the key features, chat with the assistant for follow-up questions, and export a polished PDF report with the math behind the estimate.</p>
+                </div>
+                <div class="badge-row">
+                    <div class="badge">BRS Upload</div>
+                    <div class="badge">GPT Assisted Extraction</div>
+                    <div class="badge">Chat Support</div>
+                    <div class="badge">PDF Export</div>
+                </div>
+            </div>
+            <div class="small-note">If an OpenAI key is present, the app uses GPT-backed extraction and chat; otherwise it falls back to local heuristics.</div>
+        </section>
+
+        <div class="grid">
+            <div class="left-column">
+                <div class="card">
+                    <div class="section-label">Step 1. Upload BRS</div>
+                    <h2>Document extraction</h2>
+                    <div class="upload-zone">
+                        <div class="upload-row">
+                            <input type="file" id="docFiles" multiple accept=".pdf,.docx,.txt">
+                            <button type="button" class="btn btn-secondary" id="uploadBtn">Extract features</button>
+                        </div>
+                        <div id="uploadStatus" class="status">Upload one or more BRS documents to populate the form.</div>
+                    </div>
+
+                    <div class="section-label">Step 2. Review inputs</div>
+                    <h2>Effort parameters</h2>
+                    <form id="effortForm">
+                        <div class="form-grid">
+                            <div class="field"><label for="req_count">Requirements count</label><input type="number" id="req_count" value="60" step="1" required></div>
+                            <div class="field"><label for="complexity">Complexity (1-5)</label><input type="number" id="complexity" value="3" step="0.1" min="1" max="5" required></div>
+                            <div class="field"><label for="team_exp">Team experience (years)</label><input type="number" id="team_exp" value="5" step="0.5" min="0" max="15" required></div>
+                            <div class="field"><label for="tech_unc">Tech uncertainty (0-1)</label><input type="number" id="tech_unc" value="0.5" step="0.05" min="0" max="1" required></div>
+                            <div class="field"><label for="integrations">Integrations count</label><input type="number" id="integrations" value="5" step="1" min="0" required></div>
+                            <div class="field"><label for="doc_quality">Documentation quality (1-5)</label><input type="number" id="doc_quality" value="3" step="0.1" min="1" max="5" required></div>
+                            <div class="field"><label for="deadline">Deadline pressure (0.5-2)</label><input type="number" id="deadline" value="1.0" step="0.1" min="0.5" max="2" required></div>
+                            <div class="field"><label for="domain">Domain knowledge (1-5)</label><input type="number" id="domain" value="3" step="0.1" min="1" max="5" required></div>
+                        </div>
+                        <div class="actions">
+                            <button type="submit" class="btn btn-primary">Estimate effort</button>
+                            <button type="button" class="btn btn-warm" id="exportPdfBtn">Download PDF report</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="loader" class="status card" style="display:none;">Running prediction...</div>
+
+                <div id="results" style="display:none;">
+                    <div class="card">
+                        <div class="section-label">Step 3. Results</div>
+                        <h2>Estimate output</h2>
+                        <div class="total" id="totalEffort"></div>
+                        <div class="results">
+                            <div class="panel-box">
+                                <canvas id="phaseChart"></canvas>
+                            </div>
+                            <div class="panel-box table-wrap">
+                                <table id="phaseTable">
+                                    <thead><tr><th>Phase</th><th>Hours</th></tr></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-label">Math</div>
+                        <h2>Calculation breakdown</h2>
+                        <div id="mathCalc"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-label">Explanation</div>
+                        <h2>Why this estimate</h2>
+                        <div class="panel-box explanation-box" id="explanation"></div>
+                    </div>
+                </div>
+
+                <div id="errorMsg" class="status bad"></div>
+            </div>
+
+            <div class="right-column right-stack">
+                <div class="card">
+                    <div class="section-label">Chat</div>
+                    <h2>Estimator assistant</h2>
+                    <div id="chatHistory" class="chat-box">
+                        <div class="chat-message chat-ai">Ask for clarifications, risk analysis, or recommendations after the estimate is generated.</div>
+                    </div>
+                    <div class="chat-input">
+                        <input type="text" id="chatInput" placeholder="Ask about scope, risk, phases, or next steps">
+                        <button type="button" class="btn btn-primary" id="sendChatBtn">Send</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="section-label">LLM</div>
+                    <h2>Model support</h2>
+                    <div class="panel-box">
+                        <p style="margin-top:0;">GPT-backed extraction and chat are enabled automatically when <strong>OPENAI_API_KEY</strong> is set. The app falls back to local heuristics when no key is available.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    const form = document.getElementById('effortForm');
+    const resultsDiv = document.getElementById('results');
+    const totalSpan = document.getElementById('totalEffort');
+    const tableBody = document.querySelector('#phaseTable tbody');
+    const explanationDiv = document.getElementById('explanation');
+    const mathDiv = document.getElementById('mathCalc');
+    const loader = document.getElementById('loader');
+    const chatBox = document.getElementById('chatHistory');
+    const chatInput = document.getElementById('chatInput');
+    let chart;
+
+    function getCurrentParams() {
+        return {
+            req_count: document.getElementById('req_count').value,
+            complexity: document.getElementById('complexity').value,
+            team_exp: document.getElementById('team_exp').value,
+            tech_unc: document.getElementById('tech_unc').value,
+            integrations: document.getElementById('integrations').value,
+            doc_quality: document.getElementById('doc_quality').value,
+            deadline: document.getElementById('deadline').value,
+            domain: document.getElementById('domain').value
+        };
+    }
+
+    function getChatMessages() {
+        return JSON.parse(sessionStorage.getItem('chatMessages') || '[]');
+    }
+
+    function saveChatMessages(messages) {
+        sessionStorage.setItem('chatMessages', JSON.stringify(messages));
+    }
+
+    function renderChat(messages) {
+        chatBox.innerHTML = '';
+        if (!messages.length) {
+            chatBox.innerHTML = '<div class="chat-message chat-ai">Ask for clarifications, risk analysis, or recommendations after the estimate is generated.</div>';
+            return;
+        }
+        messages.forEach(msg => addChatMessage(msg.type, msg.text, false));
+    }
+
+    function addChatMessage(type, text, persist = true) {
+        const message = document.createElement('div');
+        message.className = 'chat-message ' + (type === 'user' ? 'chat-user' : 'chat-ai');
+        message.innerText = (type === 'user' ? 'You: ' : 'Assistant: ') + text;
+        chatBox.appendChild(message);
+        chatBox.scrollTop = chatBox.scrollHeight;
+        if (persist) {
+            const messages = getChatMessages();
+            messages.push({ type, text });
+            saveChatMessages(messages);
+        }
+    }
+
+    function showUploadStatus(text, ok) {
+        const status = document.getElementById('uploadStatus');
+        status.textContent = text;
+        status.className = 'status ' + (ok ? 'good' : 'bad');
+    }
+
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
+        const files = document.getElementById('docFiles').files;
+        if (!files.length) {
+            showUploadStatus('Please select at least one BRS document.', false);
+            return;
+        }
+
+        const formData = new FormData();
+        for (const file of files) formData.append('documents', file);
+        showUploadStatus('Extracting features from the uploaded documents...', true);
+
+        try {
+            const response = await fetch('/upload', { method: 'POST', body: formData });
+            const data = await response.json();
+            if (!response.ok) {
+                showUploadStatus(data.error || 'Feature extraction failed.', false);
+                return;
+            }
+
+            ['req_count','complexity','team_exp','tech_unc','integrations','doc_quality','deadline','domain'].forEach(key => {
+                document.getElementById(key).value = data[key];
+            });
+
+            showUploadStatus('Features extracted and loaded into the form.', true);
+            const note = document.createElement('div');
+            note.className = 'panel-box';
+            note.innerHTML = data.extraction_details;
+            const existing = document.querySelector('#uploadStatus .panel-box');
+            if (existing) existing.remove();
+            document.getElementById('uploadStatus').appendChild(note);
+        } catch (err) {
+            showUploadStatus('Upload error: ' + err.message, false);
+        }
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        loader.style.display = 'block';
+        resultsDiv.style.display = 'none';
+        document.getElementById('errorMsg').textContent = '';
+
+        const formData = getCurrentParams();
+        sessionStorage.setItem('lastParams', JSON.stringify(formData));
+
+        try {
+            const response = await fetch('/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(formData)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                document.getElementById('errorMsg').textContent = data.error || 'Prediction failed';
+                return;
+            }
+            displayResults(data, formData);
+            sessionStorage.setItem('lastTotal', String(data.total));
+            sessionStorage.setItem('lastPhases', JSON.stringify(data.phases));
+            sessionStorage.setItem('lastMath', data.math_calculation || '');
+            sessionStorage.setItem('lastExplanation', data.explanation || '');
+        } catch (err) {
+            document.getElementById('errorMsg').textContent = 'Network error: ' + err.message;
+        } finally {
+            loader.style.display = 'none';
+        }
+    });
+
+    function displayResults(data) {
+        resultsDiv.style.display = 'block';
+        totalSpan.innerText = `Total Estimated Effort: ${data.total} person-hours`;
+        tableBody.innerHTML = '';
+
+        const labels = [];
+        const hours = [];
+        data.phases.forEach(phase => {
+            labels.push(phase.name);
+            hours.push(phase.hours);
+            const row = tableBody.insertRow();
+            row.insertCell(0).innerText = phase.name;
+            row.insertCell(1).innerText = phase.hours.toFixed(1);
+        });
+
+        if (chart) chart.destroy();
+        chart = new Chart(document.getElementById('phaseChart').getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Hours',
+                    data: hours,
+                    backgroundColor: ['#184e77','#2a9d8f','#f4a261','#1d3557','#457b9d','#6c757d','#8d99ae','#90be6d','#ef476f','#adb5bd'],
+                    borderWidth: 0,
+                    borderRadius: 8,
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true } }
+            }
+        });
+
+        mathDiv.innerHTML = data.math_calculation || '';
+        explanationDiv.textContent = data.explanation || '';
+    }
+
+    document.getElementById('sendChatBtn').addEventListener('click', sendChat);
+    chatInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendChat();
+        }
+    });
+
+    async function sendChat() {
+        const question = chatInput.value.trim();
+        if (!question) return;
+        const params = JSON.parse(sessionStorage.getItem('lastParams') || '{}');
+        const total = sessionStorage.getItem('lastTotal') || 'unknown';
+        const chatMessages = getChatMessages();
+        addChatMessage('user', question);
+        chatInput.value = '';
+
+        try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, params, total, chatMessages })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                addChatMessage('ai', data.error || 'Chat failed');
+                return;
+            }
+            addChatMessage('ai', data.answer);
+        } catch (err) {
+            addChatMessage('ai', 'Network error: ' + err.message);
+        }
+    }
+
+    document.getElementById('exportPdfBtn').addEventListener('click', async () => {
+        const params = JSON.parse(sessionStorage.getItem('lastParams') || JSON.stringify(getCurrentParams()));
+        const total = parseFloat(sessionStorage.getItem('lastTotal') || '0');
+        const phases = JSON.parse(sessionStorage.getItem('lastPhases') || '[]');
+        const math_calculation = sessionStorage.getItem('lastMath') || mathDiv.innerHTML || '';
+        const explanation = sessionStorage.getItem('lastExplanation') || explanationDiv.textContent || '';
+        const chatMessages = getChatMessages();
+
+        try {
+            const response = await fetch('/export_pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ params, total, phases, math_calculation, explanation, chatMessages })
+            });
+            if (!response.ok) {
+                alert('PDF export failed.');
+                return;
+            }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'effort-estimation-report.pdf';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            alert('PDF export error: ' + err.message);
+        }
+    });
+
+    renderChat(getChatMessages());
+</script>
+</body>
+</html>

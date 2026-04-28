@@ -1,0 +1,10 @@
+flask
+numpy
+pandas
+scikit-learn
+tensorflow
+pdfplumber
+python-docx
+reportlab
+requests
+openai
